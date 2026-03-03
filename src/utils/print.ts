@@ -577,6 +577,105 @@ export const usePrint = () => {
     copyHeader: boolean,
     copyFooter: boolean
   ) => {
+    const parseAttrNumber = (el: HTMLElement, attr: string, fallback = 0) => {
+      const value = parseFloat(el.getAttribute(attr) || '');
+      return Number.isFinite(value) ? value : fallback;
+    };
+
+    const syncElementsBelowTables = () => {
+      let workingPages = Array.from(container.children).filter(el => !['STYLE', 'LINK', 'SCRIPT'].includes(el.tagName)) as HTMLElement[];
+      if (workingPages.length === 0) return;
+
+      const marginTop = store.pageSpacingY || 0;
+      const marginBottom = store.pageSpacingY || 0;
+      const tableEntriesByOrigin = new Map<number, Array<{ originalBottom: number; finalGlobalBottom: number }>>();
+
+      workingPages.forEach((page, pageIndex) => {
+        const pageRect = page.getBoundingClientRect();
+        const wrappers = Array.from(page.querySelectorAll('[data-print-wrapper][data-table-flow-id]')) as HTMLElement[];
+
+        wrappers.forEach(wrapper => {
+          const table = wrapper.querySelector('table');
+          if (!table) return;
+          if (table.getAttribute('data-auto-paginate') !== 'true') return;
+
+          const originPage = parseAttrNumber(wrapper, 'data-origin-page-index', pageIndex);
+          const originalTop = parseAttrNumber(wrapper, 'data-original-top', parseFloat(wrapper.style.top || '') || 0);
+          const originalHeight = parseAttrNumber(wrapper, 'data-original-height', wrapper.getBoundingClientRect().height);
+          const originalBottom = originalTop + originalHeight;
+          const tableRect = table.getBoundingClientRect();
+          const finalBottomInPage = tableRect.bottom - pageRect.top;
+          const finalGlobalBottom = pageIndex * pageHeight + finalBottomInPage;
+
+          const list = tableEntriesByOrigin.get(originPage) || [];
+          const existing = list.find(item => Math.abs(item.originalBottom - originalBottom) < 0.5);
+          if (!existing) {
+            list.push({ originalBottom, finalGlobalBottom });
+          } else if (finalGlobalBottom > existing.finalGlobalBottom) {
+            existing.finalGlobalBottom = finalGlobalBottom;
+          }
+          tableEntriesByOrigin.set(originPage, list);
+        });
+      });
+
+      tableEntriesByOrigin.forEach(list => {
+        list.sort((a, b) => a.originalBottom - b.originalBottom);
+      });
+
+      for (let pageIndex = 0; pageIndex < workingPages.length; pageIndex++) {
+        const page = workingPages[pageIndex];
+        const wrappers = Array.from(page.querySelectorAll('[data-print-wrapper]')) as HTMLElement[];
+
+        wrappers.forEach(wrapper => {
+          if (wrapper.hasAttribute('data-table-flow-id')) return;
+
+          const originPage = parseAttrNumber(wrapper, 'data-origin-page-index', pageIndex);
+          const tableEntries = tableEntriesByOrigin.get(originPage);
+          if (!tableEntries || tableEntries.length === 0) return;
+
+          const originalTop = parseAttrNumber(wrapper, 'data-original-top', parseFloat(wrapper.style.top || '') || 0);
+          const isHeader = copyHeader && originalTop < (headerHeight + marginTop);
+          const isFooter = copyFooter && originalTop >= (pageHeight - footerHeight - marginBottom);
+          if (isHeader || isFooter) return;
+
+          let selectedTable: { originalBottom: number; finalGlobalBottom: number } | null = null;
+          for (let i = 0; i < tableEntries.length; i++) {
+            const candidate = tableEntries[i];
+            if (candidate.originalBottom <= originalTop + 0.01) {
+              selectedTable = candidate;
+            } else {
+              break;
+            }
+          }
+          if (!selectedTable) return;
+
+          const gapToTable = originalTop - selectedTable.originalBottom;
+          const targetGlobalTop = selectedTable.finalGlobalBottom + gapToTable;
+          let targetPageIndex = Math.floor(targetGlobalTop / pageHeight);
+          if (targetPageIndex < 0) targetPageIndex = 0;
+
+          while (targetPageIndex >= workingPages.length) {
+            const sourcePage = workingPages[workingPages.length - 1];
+            const newPage = document.createElement('div');
+            newPage.className = sourcePage.className;
+            newPage.style.cssText = sourcePage.style.cssText;
+            newPage.innerHTML = '';
+            copyHeaderFooter(sourcePage, newPage, headerHeight, footerHeight, pageHeight, copyHeader, copyFooter);
+            container.appendChild(newPage);
+            workingPages = Array.from(container.children).filter(el => !['STYLE', 'LINK', 'SCRIPT'].includes(el.tagName)) as HTMLElement[];
+          }
+
+          const targetPage = workingPages[targetPageIndex];
+          const targetTop = targetGlobalTop - targetPageIndex * pageHeight;
+          if (wrapper.parentElement !== targetPage) {
+            targetPage.appendChild(wrapper);
+          }
+          wrapper.style.removeProperty('top');
+          wrapper.style.setProperty('top', `${targetTop}px`, 'important');
+        });
+      }
+    };
+
     let pages = Array.from(container.children).filter(el => !['STYLE', 'LINK', 'SCRIPT'].includes(el.tagName)) as HTMLElement[];
     
     for (let i = 0; i < pages.length; i++) {
@@ -749,6 +848,8 @@ export const usePrint = () => {
              }
         });
     }
+
+    syncElementsBelowTables();
     
     // Update all page positions
     pages = Array.from(container.children).filter(el => !['STYLE', 'LINK', 'SCRIPT'].includes(el.tagName)) as HTMLElement[];
@@ -797,18 +898,26 @@ export const usePrint = () => {
     convertSvg = true,
     getComputedStyleFn: (elt: Element) => CSSStyleDeclaration = window.getComputedStyle
   ) => {
-    // Create hidden container
+    const tempHost = document.createElement('div');
+    tempHost.style.position = 'fixed';
+    tempHost.style.left = '0';
+    tempHost.style.top = '0';
+    tempHost.style.width = '0';
+    tempHost.style.height = '0';
+    tempHost.style.overflow = 'hidden';
+    tempHost.style.zIndex = '-9999';
+    tempHost.style.visibility = 'hidden';
+    tempHost.style.pointerEvents = 'none';
+    tempHost.className = 'print_temp_container';
+    document.body.appendChild(tempHost);
+
     const container = document.createElement('div');
-    container.style.position = 'fixed';
-    container.style.left = '-10000px'; // Move off-screen to avoid flickering
+    container.style.position = 'absolute';
+    container.style.left = '0';
     container.style.top = '0';
     container.style.width = `${width}px`;
     container.style.height = `${height}px`; // Start with 1 page height
-    // Don't use overflow hidden, let us measure full heights
-    // container.style.overflow = 'hidden'; 
-    container.style.zIndex = '-9999'; // Hide behind everything
-    container.className = 'print_temp_container';
-    document.body.appendChild(container);
+    tempHost.appendChild(container);
 
     // Copy all styles from head to the container to ensure proper rendering
     const styles = document.head.querySelectorAll('style, link[rel="stylesheet"]');
@@ -823,10 +932,6 @@ export const usePrint = () => {
     } else if (Array.isArray(content)) {
         pages = content;
     } else {
-        // Clone the element to avoid modifying the original
-        // If content is the designer workspace, it might contain multiple pages or just one canvas
-        // We assume content is the .workspace-content or similar
-        // Let's check if content has children that are pages
         if (content.classList.contains('design-workspace')) {
              pages = Array.from(content.children) as HTMLElement[];
         } else {
@@ -849,7 +954,7 @@ export const usePrint = () => {
 
             // MARK WRAPPERS for pagination logic BEFORE cleaning
             const wrappers = clone.querySelectorAll('.element-wrapper');
-            wrappers.forEach(w => {
+            wrappers.forEach((w, wrapperIndex) => {
                 const el = w as HTMLElement;
                 el.setAttribute('data-print-wrapper', 'true');
                 const top = parseFloat(el.style.top || '');
@@ -858,6 +963,15 @@ export const usePrint = () => {
                 const resolvedHeight = Number.isFinite(height) ? height : el.getBoundingClientRect().height;
                 el.setAttribute('data-original-top', `${resolvedTop}`);
                 el.setAttribute('data-original-height', `${resolvedHeight}`);
+                el.setAttribute('data-origin-page-index', `${idx}`);
+                const wrapperSeq = `${idx}-${wrapperIndex}`;
+                el.setAttribute('data-wrapper-seq', wrapperSeq);
+                const table = el.querySelector('table');
+                if (table) {
+                  el.setAttribute('data-table-flow-id', wrapperSeq);
+                } else {
+                  el.removeAttribute('data-table-flow-id');
+                }
             });
             
             // Clean up the clone
@@ -903,7 +1017,7 @@ export const usePrint = () => {
     // Update container height based on new page count
     container.style.height = `${height * pagesCount}px`;
 
-    return { container, tempWrapper: container, pagesCount };
+    return { container, tempWrapper: tempHost, pagesCount };
   };
 
   const generatePageImages = async (container: HTMLElement, width: number, height: number): Promise<string[]> => {
@@ -1003,8 +1117,21 @@ export const usePrint = () => {
   };
 
       const browserPrint = async (content: HTMLElement | string | HTMLElement[]) => {
+      const previousHtmlOverflowX = document.documentElement.style.overflowX;
+      const previousHtmlOverflowY = document.documentElement.style.overflowY;
+      const previousHtmlScrollbarGutter = document.documentElement.style.scrollbarGutter;
+      const previousBodyOverflowX = document.body.style.overflowX;
+      const previousBodyOverflowY = document.body.style.overflowY;
+      const previousBodyScrollbarGutter = document.body.style.scrollbarGutter;
       try {
-        const pdf = await createPdfDocument(content);
+      document.documentElement.style.overflowX = 'hidden';
+      document.documentElement.style.overflowY = 'hidden';
+      document.documentElement.style.scrollbarGutter = 'stable';
+      document.body.style.overflowX = 'hidden';
+      document.body.style.overflowY = 'hidden';
+      document.body.style.scrollbarGutter = 'stable';
+
+      const pdf = await createPdfDocument(content);
         const blob = pdf.output('blob');
         const blobUrl = URL.createObjectURL(blob);
 
@@ -1033,34 +1160,45 @@ export const usePrint = () => {
           return;
         }
         
-        const iframe = document.createElement('iframe');
-        iframe.style.position = 'fixed';
-        iframe.style.left = '0';
-        iframe.style.top = '0';
-        iframe.style.width = '0px';
-        iframe.style.height = '0px';
-        iframe.style.border = '0';
-        iframe.style.visibility = 'hidden';
-        iframe.src = blobUrl;
-        document.body.appendChild(iframe);
-        
-        iframe.onload = () => {
-          const win = iframe.contentWindow;
-          if (win) {
-            win.focus();
-            // Edge needs a short delay for the PDF viewer to finish rendering.
+        await new Promise<void>((resolve) => {
+          const iframe = document.createElement('iframe');
+          iframe.style.position = 'fixed';
+          iframe.style.left = '0';
+          iframe.style.top = '0';
+          iframe.style.width = '0px';
+          iframe.style.height = '0px';
+          iframe.style.border = '0';
+          iframe.style.visibility = 'hidden';
+          iframe.src = blobUrl;
+          document.body.appendChild(iframe);
+
+          iframe.onload = () => {
+            const win = iframe.contentWindow;
+            if (win) {
+              win.focus();
+              setTimeout(() => {
+                win.print();
+              }, 100);
+            }
             setTimeout(() => {
-              win.print();
-            }, 100);
-          }
-            setTimeout(() => {
-                document.body.removeChild(iframe);
-                URL.revokeObjectURL(blobUrl);
-            }, 1000); // Give it some time to process
-        };
+              if (iframe.parentNode) {
+                iframe.parentNode.removeChild(iframe);
+              }
+              URL.revokeObjectURL(blobUrl);
+              resolve();
+            }, 1000);
+          };
+        });
     } catch (error) {
         console.error('Print failed', error);
         alert('Print failed');
+    } finally {
+        document.documentElement.style.overflowX = previousHtmlOverflowX;
+        document.documentElement.style.overflowY = previousHtmlOverflowY;
+        document.documentElement.style.scrollbarGutter = previousHtmlScrollbarGutter;
+        document.body.style.overflowX = previousBodyOverflowX;
+        document.body.style.overflowY = previousBodyOverflowY;
+        document.body.style.scrollbarGutter = previousBodyScrollbarGutter;
     }
   };
 
