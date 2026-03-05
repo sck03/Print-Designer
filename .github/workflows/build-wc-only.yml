@@ -1,4 +1,4 @@
-name: Build WC Only (Vue Print Designer - Library Mode)
+name: Build WC Only (Print Designer - Library Mode)
 
 on:
   workflow_dispatch:   # 只手动触发
