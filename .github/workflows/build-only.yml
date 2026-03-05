@@ -1,4 +1,4 @@
-name: Build Only (Vue Print Designer)
+name: Build Only (Print Designer)
 
 on:
   # 只允许手动触发，不监听 push/pull_request
