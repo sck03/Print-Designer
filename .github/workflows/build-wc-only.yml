@@ -1,0 +1,47 @@
+name: Build WC Only (Vue Print Designer - Library Mode)
+
+on:
+  workflow_dispatch:   # 只手动触发
+
+jobs:
+  build-wc:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Web Components (Library Mode)
+        run: npm run build:wc
+
+      - name: Show dist contents (debug)
+        run: |
+          echo "Build WC completed. Listing dist/ contents:"
+          if [ -d "dist" ]; then
+            ls -la dist/
+            echo ""
+            echo "Expected files (per docs):"
+            echo "  - print-designer.es.js"
+            echo "  - print-designer.umd.js"
+            echo "  - print-designer.css"
+            echo "  - web-component.d.ts (or similar .d.ts)"
+          else
+            echo "dist/ folder NOT found! Build may have failed."
+          fi
+
+      - name: Upload dist as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wc-dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: warn   # 如果 dist 没生成，给警告但不失败整个 job
