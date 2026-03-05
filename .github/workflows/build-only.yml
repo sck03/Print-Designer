@@ -1,0 +1,44 @@
+name: Build Only (Vue Print Designer)
+
+on:
+  # 只允许手动触发，不监听 push/pull_request
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production
+        env:
+          # 可选：如果你计划把 dist 部署到子路径（如 /print-designer/），这里设置
+          # 如果只是本地用或根路径部署，可以留空或设为 /
+          VITE_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - name: Show build result (for debugging)
+        run: |
+          echo "Build completed. dist folder contents:"
+          ls -la dist/
+          echo ""
+          echo "Tip: Download artifacts from the Actions summary page to get the dist folder."
+
+      # 可选：把 dist 作为 artifact 保存，方便下载
+      - name: Upload dist as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-dist
+          path: dist/
+          retention-days: 7   # 保持 7 天
